@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>品管測驗練習系統 (線上自動同步版)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <style>
+        body { font-family: "Microsoft JhengHei", Arial, sans-serif; background-color: #f0f2f5; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        .container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.1); width: 100%; max-width: 800px; }
+        .header { text-align: center; border-bottom: 2px solid #eee; padding-bottom: 15px; margin-bottom: 20px; }
+        .stats { color: #555; font-size: 15px; margin-top: 10px; background: #fff; padding: 10px; border-radius: 8px; }
+        .question-box { border-left: 5px solid #00796b; background: #f9fdfd; padding: 25px; border-radius: 4px; margin-bottom: 20px; position: relative; min-height: 100px; }
+        .category-tag { position: absolute; right: 10px; bottom: 10px; font-size: 12px; color: #00796b; background: #e0f2f1; padding: 4px 10px; border-radius: 20px; font-weight: bold;}
+        .options-box { display: flex; flex-direction: column; gap: 12px; }
+        .option { cursor: pointer; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; background: white; transition: all 0.2s; font-size: 16px; display: flex; align-items: flex-start; }
+        .option:hover { background: #e3f2fd; border-color: #2196f3; transform: translateY(-2px); }
+        .option strong { margin-right: 12px; color: #1976d2; min-width: 30px;}
+        .controls { display: flex; justify-content: center; gap: 15px; margin-top: 25px; }
+        button { padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; transition: opacity 0.2s; }
+        .btn-primary { background: #1976d2; color: white; }
+        .result { margin-top: 20px; font-weight: bold; text-align: center; font-size: 20px; min-height: 30px; }
+        .correct { color: #2e7d32; }
+        .wrong { color: #d32f2f; }
+        #loading-screen { text-align: center; padding: 50px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div id="loading-screen">
+        <h2 style="color: #1976d2;">🔄 正在載入品管題庫...</h2>
+        <p style="color: #666;">系統正在自 Google 試算表同步最新題目，請稍候</p>
+    </div>
+
+    <div id="main-ui" style="display:none;">
+        <div class="header">
+            <h2 style="margin:0; color:#1a237e;">🏗️ 品管人員練習系統</h2>
+            <div class="stats">
+                📝 總計: <span id="total-count">0</span>題 | 
+                ✅ 答對: <span id="correct-count">0</span> | 
+                ❌ 答錯: <span id="wrong-count">0</span>
+            </div>
+        </div>
+
+        <div class="question-box">
+            <span style="font-weight:bold; color:#1976d2; font-size:14px; margin-right:10px;" id="q-id"></span>
+            <span id="question-text" style="font-size: 18px; line-height: 1.6; font-weight: 500;">題目載入中...</span>
+            <div class="category-tag" id="category-text"></div>
+        </div>
+
+        <div class="options-box" id="options-area"></div>
+        <div class="result" id="result-text"></div>
+
+        <div class="controls">
+            <button class="btn-primary" id="btn-next">下一題 (J)</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSyCMTaW70xGIR1uHhJ9HGCyQam4Zqqwk_ozsB5EUy34bWXdOzIkp7EaM_hRL6clHjjXVuJJl4brcm3/pub?output=csv';
+
+    let questions = [];
+    let currentQuestionIndex = 0;
+    let correctCount = 0;
+    let wrongCount = 0;
+    let isAnswered = false;
+
+    window.onload = function() {
+        Papa.parse(SHEET_CSV_URL, {
+            download: true,
+            header: false,
+            skipEmptyLines: true,
+            complete: function(results) {
+                let rawRows = results.data;
+                questions = rawRows.map(row => {
+                    if (!row || row.length < 3) return null;
+                    let rawText = row[2] || "";
+                    let parsed = parseQuestionText(rawText);
+                    if (parsed.opt.length === 0) return null;
+                    let rawAnswer = row[3] ? row[3].toString().toUpperCase().replace(/[^A-D]/g, '') : "";
+                    if (!rawAnswer) return null; 
+                    return {
+                        id: row[0] || "無",
+                        category: row[1] || "綜合單元",
+                        questionText: parsed.q,
+                        options: parsed.opt,
+                        answer: rawAnswer
+                    };
+                }).filter(q => q !== null); 
+
+                if(questions.length === 0) {
+                    document.getElementById('loading-screen').innerHTML = "<h2 style='color:red;'>⚠️ 讀取失敗：找不到符合格式的題目</h2><p>請確保第三欄同時包含題目與 (A)(B)(C)(D) 選項</p>";
+                    return;
+                }
+
+                document.getElementById('loading-screen').style.display = 'none';
+                document.getElementById('main-ui').style.display = 'block';
+                document.getElementById('total-count').textContent = questions.length;
+                loadQuestion(0);
+            },
+            error: function() {
+                document.getElementById('loading-screen').innerHTML = "<h2 style='color:red;'>⚠️ 網路連線錯誤</h2><p>無法讀取 Google 試算表，請確認網址是否正確發佈。</p>";
+            }
+        });
+    };
+
+    function parseQuestionText(text) {
+        let q = text;
+        let opt = [];
+        let splitMatch = text.match(/(?:\(|（)\s*[Aa]\s*(?:\)|）)/);
+        if(splitMatch) {
+            let splitIndex = splitMatch.index;
+            q = text.substring(0, splitIndex).trim(); 
+            let optionsText = text.substring(splitIndex); 
+            let optRegex = /(?:\(|（)\s*[A-Da-d]\s*(?:\)|）)\s*/;
+            opt = optionsText.split(optRegex).filter(Boolean); 
+        }
+        return { q: q, opt: opt };
+    }
+
+    function loadQuestion(index) {
+        if (index >= questions.length) {
+            alert("恭喜！全部題目練習完畢！");
+            return;
+        }
+        currentQuestionIndex = index;
+        const q = questions[index];
+        isAnswered = false;
+
+        document.getElementById('q-id').textContent = `[題號: ${q.id}]`;
+        document.getElementById('question-text').textContent = q.questionText;
+        document.getElementById('category-text').textContent = q.category;
+        document.getElementById('result-text').textContent = "";
+        document.getElementById('result-text').className = "result";
+
+        const optionsArea = document.getElementById('options-area');
+        optionsArea.innerHTML = "";
+        const labels = ['A', 'B', 'C', 'D'];
+        
+        q.options.forEach((optText, i) => {
+            if (i >= 4) return;
+            const label = labels[i];
+            const div = document.createElement('div');
+            div.className = 'option';
+            div.innerHTML = `<strong>(${label})</strong> <span>${optText.trim()}</span>`;
+            div.onclick = () => checkAnswer(label, q.answer, div);
+            optionsArea.appendChild(div);
+        });
+    }
+
+    function checkAnswer(selected, correct, element) {
+        if (isAnswered) return; 
+        isAnswered = true;
+        
+        const result = document.getElementById('result-text');
+        if (selected === correct) {
+            result.textContent = "✅ 答對！";
+            result.className = "result correct";
+            element.style.backgroundColor = "#e8f5e9";
+            element.style.borderColor = "#4caf50";
+            correctCount++;
+        } else {
+            result.textContent = `❌ 錯誤！正確答案是 (${correct})`;
+            result.className = "result wrong";
+            element.style.backgroundColor = "#ffeeb2"; 
+            element.style.borderColor = "#f44336";
+            wrongCount++;
+            
+            const labels = ['A', 'B', 'C', 'D'];
+            const correctIndex = labels.indexOf(correct);
+            const optElements = document.querySelectorAll('.option');
+            if(optElements[correctIndex]) {
+                 optElements[correctIndex].style.border = "2px solid #4caf50";
+            }
+        }
+        document.getElementById('correct-count').textContent = correctCount;
+        document.getElementById('wrong-count').textContent = wrongCount;
+    }
+
+    document.getElementById('btn-next').onclick = () => loadQuestion(currentQuestionIndex + 1);
+
+    document.addEventListener('keydown', (e) => {
+        if (document.getElementById('main-ui').style.display === 'none') return;
+        const key = e.key.toUpperCase();
+        const map = {'1':'A', '2':'B', '3':'C', '4':'D', 'A':'A', 'B':'B', 'C':'C', 'D':'D'};
+        if (map[key] && !isAnswered) {
+            const idx = map[key].charCodeAt(0) - 65; 
+            const opts = document.querySelectorAll('.option');
+            if(opts[idx]) checkAnswer(map[key], questions[currentQuestionIndex].answer, opts[idx]);
+        } else if (key === 'J') {
+            loadQuestion(currentQuestionIndex + 1);
+        }
+    });
+</script>
+
+</body>
+</html>
