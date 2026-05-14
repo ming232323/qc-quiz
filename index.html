@@ -238,4 +238,238 @@
                 let categories = new Set();
                 allQuestions = results.data.filter(row => {
                     return row && row.length >= 4 && row[2] && row[2].includes("(A)");
-                }).map
+                }).map(row => {
+                    let parsed = parseQuestionText(row[2]);
+                    let cat = row[1] ? row[1].trim() : "綜合單元";
+                    categories.add(cat);
+                    return {
+                        id: row[0] || "無",
+                        category: cat,
+                        questionText: parsed.q,
+                        options: parsed.opt,
+                        answer: row[3] ? row[3].toString().toUpperCase().replace(/[^A-D]/g, '') : ""
+                    };
+                }).filter(q => q && q.options && q.options.length > 0 && q.answer !== "");
+
+                const catSelect = document.getElementById('category-select');
+                categories.forEach(cat => {
+                    let option = document.createElement('option');
+                    option.value = cat;
+                    option.textContent = cat;
+                    catSelect.appendChild(option);
+                });
+
+                updateDashboardStats();
+                document.getElementById('loading-screen').style.display = 'none';
+                document.getElementById('dashboard-ui').style.display = 'block';
+            },
+            error: function(err) {
+                document.getElementById('loading-screen').innerHTML = `<h2 style="color:red;">⚠️ 網路連線失敗</h2><p>無法連線至 Google 試算表，請稍後再試。</p>`;
+            }
+        });
+    };
+
+    function parseQuestionText(text) {
+        let q = text;
+        let opt = [];
+        let splitMatch = text.match(/(?:\(|（)\s*[Aa]\s*(?:\)|）)/);
+        if(splitMatch) {
+            let splitIndex = splitMatch.index;
+            q = text.substring(0, splitIndex).trim();
+            let optionsText = text.substring(splitIndex);
+            let optRegex = /(?:\(|（)\s*[A-Da-d]\s*(?:\)|）)\s*/;
+            opt = optionsText.split(optRegex).filter(Boolean);
+        }
+        return { q: q, opt: opt };
+    }
+
+    function updateDashboardStats() {
+        document.getElementById('db-total').textContent = allQuestions.length;
+        document.getElementById('db-wrong').textContent = wrongRecord.length;
+        document.getElementById('db-star').textContent = starRecord.length;
+    }
+
+    function startQuiz(mode) {
+        const keyword = document.getElementById('search-input').value.toLowerCase();
+        const category = document.getElementById('category-select').value;
+        const mockCount = parseInt(document.getElementById('mock-count-select').value);
+        
+        let filtered = allQuestions.filter(q => {
+            let matchCat = (category === 'ALL' || q.category === category);
+            let matchKey = (keyword === '' || q.questionText.toLowerCase().includes(keyword));
+            return matchCat && matchKey;
+        });
+
+        if (mode === 'wrong') {
+            filtered = filtered.filter(q => wrongRecord.includes(q.id));
+            if(filtered.length === 0) return alert("目前範圍內沒有錯題紀錄！");
+        } else if (mode === 'starred') {
+            filtered = filtered.filter(q => starRecord.includes(q.id));
+            if(filtered.length === 0) return alert("目前範圍內沒有收藏題目！");
+        } else if (mode === 'random') {
+            filtered = filtered.sort(() => 0.5 - Math.random()).slice(0, mockCount);
+            startTimer(mockCount * 60); 
+        }
+
+        if(filtered.length === 0) return alert("找不到符合條件的題目。");
+
+        currentQuizList = filtered;
+        currentIndex = 0;
+        sessionCorrect = 0;
+        sessionWrong = 0;
+        
+        document.getElementById('session-correct').textContent = '0';
+        document.getElementById('session-wrong').textContent = '0';
+        document.getElementById('dashboard-ui').style.display = 'none';
+        document.getElementById('quiz-ui').style.display = 'block';
+        
+        loadQuestion();
+    }
+
+    function backToDashboard() {
+        clearInterval(timerInterval);
+        document.getElementById('quiz-timer').style.display = 'none';
+        document.getElementById('quiz-ui').style.display = 'none';
+        document.getElementById('dashboard-ui').style.display = 'block';
+        updateDashboardStats(); 
+    }
+
+    function loadQuestion() {
+        if (currentIndex >= currentQuizList.length) {
+            alert(`測驗結束！答對: ${sessionCorrect}，答錯: ${sessionWrong}。`);
+            return backToDashboard();
+        }
+        
+        const q = currentQuizList[currentIndex];
+        isAnswered = false;
+
+        document.getElementById('current-progress').textContent = `${currentIndex + 1} / ${currentQuizList.length}`;
+        document.getElementById('q-id').textContent = `[題號: ${q.id}]`;
+        document.getElementById('question-text').textContent = q.questionText;
+        document.getElementById('category-text').textContent = q.category;
+        
+        const resultUI = document.getElementById('result-text');
+        resultUI.style.display = 'none';
+
+        const starBtn = document.getElementById('star-btn');
+        if (starRecord.includes(q.id)) {
+            starBtn.textContent = '★';
+            starBtn.className = 'star-btn starred';
+        } else {
+            starBtn.textContent = '☆';
+            starBtn.className = 'star-btn unstarred';
+        }
+
+        const optionsArea = document.getElementById('options-area');
+        optionsArea.innerHTML = "";
+        const labels = ['A', 'B', 'C', 'D'];
+        
+        q.options.forEach((optText, i) => {
+            if (i >= 4) return;
+            const label = labels[i];
+            const div = document.createElement('div');
+            div.className = 'option';
+            div.innerHTML = `<strong>(${label})</strong> <span>${optText.trim()}</span>`;
+            div.onclick = () => checkAnswer(label, q.answer, div);
+            optionsArea.appendChild(div);
+        });
+    }
+
+    function checkAnswer(selected, correct, element) {
+        if (isAnswered) return; 
+        isAnswered = true;
+        
+        const qId = currentQuizList[currentIndex].id;
+        const result = document.getElementById('result-text');
+        result.style.display = 'block';
+        const isDark = document.body.classList.contains('dark-mode');
+
+        if (selected === correct) {
+            result.textContent = "✅ 答對！";
+            result.className = "result correct";
+            element.style.backgroundColor = isDark ? "rgba(72, 187, 120, 0.3)" : "#e6fffa";
+            element.style.borderColor = "#38b2ac";
+            sessionCorrect++;
+            if(wrongRecord.includes(qId)) {
+                wrongRecord = wrongRecord.filter(id => id !== qId);
+                localStorage.setItem('qc_wrong_ids', JSON.stringify(wrongRecord));
+            }
+        } else {
+            result.textContent = `❌ 錯誤！正確答案是 (${correct})`;
+            result.className = "result wrong";
+            element.style.backgroundColor = isDark ? "rgba(245, 101, 101, 0.3)" : "#fff5f5"; 
+            element.style.borderColor = "#e53e3e";
+            sessionWrong++;
+            if(!wrongRecord.includes(qId)) {
+                wrongRecord.push(qId);
+                localStorage.setItem('qc_wrong_ids', JSON.stringify(wrongRecord));
+            }
+            const labels = ['A', 'B', 'C', 'D'];
+            const correctIndex = labels.indexOf(correct);
+            const optElements = document.querySelectorAll('.option');
+            if(optElements[correctIndex]) {
+                 optElements[correctIndex].style.border = "2px solid #38b2ac";
+                 optElements[correctIndex].style.backgroundColor = isDark ? "rgba(72, 187, 120, 0.15)" : "#f0fff4";
+            }
+        }
+        document.getElementById('session-correct').textContent = sessionCorrect;
+        document.getElementById('session-wrong').textContent = sessionWrong;
+    }
+
+    function toggleStar() {
+        const qId = currentQuizList[currentIndex].id;
+        const starBtn = document.getElementById('star-btn');
+        if (starRecord.includes(qId)) {
+            starRecord = starRecord.filter(id => id !== qId);
+            starBtn.textContent = '☆';
+            starBtn.className = 'star-btn unstarred';
+        } else {
+            starRecord.push(qId);
+            starBtn.textContent = '★';
+            starBtn.className = 'star-btn starred';
+        }
+        localStorage.setItem('qc_star_ids', JSON.stringify(starRecord));
+    }
+
+    function startTimer(seconds) {
+        clearInterval(timerInterval);
+        const timerUI = document.getElementById('quiz-timer');
+        timerUI.style.display = 'block';
+        let remaining = seconds;
+        const updateTimer = () => {
+            let m = Math.floor(remaining / 60).toString().padStart(2, '0');
+            let s = (remaining % 60).toString().padStart(2, '0');
+            timerUI.textContent = `${m}:${s}`;
+        };
+        updateTimer();
+        timerInterval = setInterval(() => {
+            remaining--;
+            updateTimer();
+            if (remaining <= 0) {
+                clearInterval(timerInterval);
+                alert("時間到！強制交卷。");
+                backToDashboard();
+            }
+        }, 1000);
+    }
+
+    document.getElementById('btn-next').onclick = () => {
+        currentIndex++;
+        loadQuestion();
+    };
+
+    document.addEventListener('keydown', (e) => {
+        if (document.getElementById('quiz-ui').style.display === 'none') return;
+        const key = e.key.toUpperCase();
+        const map = {'1':'A', '2':'B', '3':'C', '4':'D', 'A':'A', 'B':'B', 'C':'C', 'D':'D'};
+        if (map[key] && !isAnswered) {
+            const idx = map[key].charCodeAt(0) - 65; 
+            const opts = document.querySelectorAll('.option');
+            if(opts[idx]) checkAnswer(map[key], currentQuizList[currentIndex].answer, opts[idx]);
+        } else if (key === 'J' || key === 'ENTER') {
+            if(isAnswered) { currentIndex++; loadQuestion(); }
+        } else if (key === 'F') { toggleStar(); }
+    });
+</script>
+</body>
+</html>
