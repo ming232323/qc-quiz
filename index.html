@@ -187,7 +187,6 @@
 </div>
 
 <script>
-    // 發生重大錯誤時的防呆顯示，避免全白畫面
     window.onerror = function(msg) {
         const loader = document.getElementById('loading-screen');
         if(loader) {
@@ -205,8 +204,9 @@
     let sessionWrong = 0;
     let isAnswered = false;
     let timerInterval = null;
+    let currentMode = ''; // 紀錄當前模式
 
-    // 加入防呆的本地記憶讀取
+    // 讀取本地記憶 (錯題、收藏)
     let wrongRecord = [];
     let starRecord = [];
     try {
@@ -233,7 +233,6 @@
             download: true,
             header: false,
             skipEmptyLines: true,
-            // 移除了 headers 設定，避免 Google 伺服器阻擋 CORS 請求
             complete: function(results) {
                 let categories = new Set();
                 allQuestions = results.data.filter(row => {
@@ -290,6 +289,7 @@
     }
 
     function startQuiz(mode) {
+        currentMode = mode;
         const keyword = document.getElementById('search-input').value.toLowerCase();
         const category = document.getElementById('category-select').value;
         const mockCount = parseInt(document.getElementById('mock-count-select').value);
@@ -317,6 +317,24 @@
         currentIndex = 0;
         sessionCorrect = 0;
         sessionWrong = 0;
+
+        // === 新增：循序漸進接續進度邏輯 ===
+        if (mode === 'sequential' && keyword === '') {
+            let savedId = localStorage.getItem('qc_seq_progress_id_' + category);
+            if (savedId) {
+                let foundIndex = currentQuizList.findIndex(q => q.id === savedId);
+                // 只有當找到進度，且不是第一題時才詢問
+                if (foundIndex > 0) {
+                    let catName = (category === 'ALL') ? '全單元範圍' : category;
+                    if (confirm(`系統紀錄您上次在「${catName}」練習到題號 [${savedId}]\n是否要接續上次的進度？\n\n(按「確定」接續，按「取消」從頭開始)`)) {
+                        currentIndex = foundIndex;
+                    } else {
+                        // 如果選擇重頭開始，清除該單元的舊紀錄
+                        localStorage.removeItem('qc_seq_progress_id_' + category);
+                    }
+                }
+            }
+        }
         
         document.getElementById('session-correct').textContent = '0';
         document.getElementById('session-wrong').textContent = '0';
@@ -337,11 +355,23 @@
     function loadQuestion() {
         if (currentIndex >= currentQuizList.length) {
             alert(`測驗結束！答對: ${sessionCorrect}，答錯: ${sessionWrong}。`);
+            
+            // 如果是循序漸進練完了，清除該單元進度
+            if (currentMode === 'sequential' && document.getElementById('search-input').value.trim() === '') {
+                const category = document.getElementById('category-select').value;
+                localStorage.removeItem('qc_seq_progress_id_' + category);
+            }
             return backToDashboard();
         }
         
         const q = currentQuizList[currentIndex];
         isAnswered = false;
+
+        // 每次載入題目時，更新記憶進度
+        if (currentMode === 'sequential' && document.getElementById('search-input').value.trim() === '') {
+            const category = document.getElementById('category-select').value;
+            localStorage.setItem('qc_seq_progress_id_' + category, q.id);
+        }
 
         document.getElementById('current-progress').textContent = `${currentIndex + 1} / ${currentQuizList.length}`;
         document.getElementById('q-id').textContent = `[題號: ${q.id}]`;
