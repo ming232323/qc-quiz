@@ -105,7 +105,14 @@
         body.dark-mode .option strong { color: #63b3ed; }
         
         .controls { display: flex; justify-content: center; gap: 15px; margin-top: 25px; }
-        .btn-next { padding: 12px 30px; border: none; border-radius: 6px; cursor: pointer; font-size: 18px; font-weight: bold; background: #3182ce; color: white; width: 100%; max-width: 300px;}
+        .btn-prev { padding: 12px 30px; border: none; border-radius: 6px; cursor: pointer; font-size: 18px; font-weight: bold; background: #a0aec0; color: white; width: 100%; max-width: 200px; transition: background 0.2s;}
+        .btn-prev:hover { background: #718096; }
+        .btn-prev:disabled { background: #e2e8f0; cursor: not-allowed; color: #a0aec0; }
+        body.dark-mode .btn-prev { background: #4a5568; }
+        body.dark-mode .btn-prev:hover { background: #2d3748; }
+        body.dark-mode .btn-prev:disabled { background: #2d3748; color: #4a5568; opacity: 0.5; }
+        
+        .btn-next { padding: 12px 30px; border: none; border-radius: 6px; cursor: pointer; font-size: 18px; font-weight: bold; background: #3182ce; color: white; width: 100%; max-width: 200px;}
         
         .result { margin-top: 20px; font-weight: bold; text-align: center; font-size: 20px; min-height: 30px; padding: 10px; border-radius: 6px; }
         .correct { color: var(--result-correct-text); background: var(--result-correct-bg); border: 1px solid var(--result-correct-text);}
@@ -181,6 +188,7 @@
         <div class="result" id="result-text" style="display:none;"></div>
 
         <div class="controls">
+            <button class="btn-prev" id="btn-prev">上一題 (K)</button>
             <button class="btn-next" id="btn-next">下一題 (J)</button>
         </div>
     </div>
@@ -204,9 +212,12 @@
     let sessionWrong = 0;
     let isAnswered = false;
     let timerInterval = null;
-    let currentMode = ''; // 紀錄當前模式
+    let currentMode = '';
+    
+    // === 新增：追蹤這回合的作答紀錄 ===
+    let scoredQuestions = new Set();  // 避免重複計分
+    let sessionAnswers = [];          // 記憶每一題選了什麼選項
 
-    // 讀取本地記憶 (錯題、收藏)
     let wrongRecord = [];
     let starRecord = [];
     try {
@@ -317,19 +328,20 @@
         currentIndex = 0;
         sessionCorrect = 0;
         sessionWrong = 0;
+        
+        // === 初始化這回合的狀態記憶 ===
+        scoredQuestions.clear();
+        sessionAnswers = new Array(currentQuizList.length).fill(null);
 
-        // === 新增：循序漸進接續進度邏輯 ===
         if (mode === 'sequential' && keyword === '') {
             let savedId = localStorage.getItem('qc_seq_progress_id_' + category);
             if (savedId) {
                 let foundIndex = currentQuizList.findIndex(q => q.id === savedId);
-                // 只有當找到進度，且不是第一題時才詢問
                 if (foundIndex > 0) {
                     let catName = (category === 'ALL') ? '全單元範圍' : category;
                     if (confirm(`系統紀錄您上次在「${catName}」練習到題號 [${savedId}]\n是否要接續上次的進度？\n\n(按「確定」接續，按「取消」從頭開始)`)) {
                         currentIndex = foundIndex;
                     } else {
-                        // 如果選擇重頭開始，清除該單元的舊紀錄
                         localStorage.removeItem('qc_seq_progress_id_' + category);
                     }
                 }
@@ -356,7 +368,6 @@
         if (currentIndex >= currentQuizList.length) {
             alert(`測驗結束！答對: ${sessionCorrect}，答錯: ${sessionWrong}。`);
             
-            // 如果是循序漸進練完了，清除該單元進度
             if (currentMode === 'sequential' && document.getElementById('search-input').value.trim() === '') {
                 const category = document.getElementById('category-select').value;
                 localStorage.removeItem('qc_seq_progress_id_' + category);
@@ -364,10 +375,12 @@
             return backToDashboard();
         }
         
+        const btnPrev = document.getElementById('btn-prev');
+        btnPrev.disabled = (currentIndex === 0);
+        
         const q = currentQuizList[currentIndex];
         isAnswered = false;
 
-        // 每次載入題目時，更新記憶進度
         if (currentMode === 'sequential' && document.getElementById('search-input').value.trim() === '') {
             const category = document.getElementById('category-select').value;
             localStorage.setItem('qc_seq_progress_id_' + category, q.id);
@@ -400,16 +413,59 @@
             const div = document.createElement('div');
             div.className = 'option';
             div.innerHTML = `<strong>(${label})</strong> <span>${optText.trim()}</span>`;
-            div.onclick = () => checkAnswer(label, q.answer, div);
+            
+            // 綁定點擊事件 (分離計分與渲染邏輯)
+            div.onclick = () => {
+                if (!isAnswered) {
+                    processAnswerSelection(label, q.answer, q.id);
+                    renderAnswerState(label, q.answer, div);
+                }
+            };
             optionsArea.appendChild(div);
         });
+
+        // === 檢查是否為已作答題目，如果是，直接渲染原本的狀態 ===
+        if (sessionAnswers[currentIndex] !== null) {
+            isAnswered = true;
+            const previouslySelected = sessionAnswers[currentIndex];
+            const selectedIndex = labels.indexOf(previouslySelected);
+            const optElements = document.querySelectorAll('.option');
+            if(optElements[selectedIndex]) {
+                renderAnswerState(previouslySelected, q.answer, optElements[selectedIndex]);
+            }
+        }
     }
 
-    function checkAnswer(selected, correct, element) {
-        if (isAnswered) return; 
+    // 處理計分與錯題本紀錄 (背景處理)
+    function processAnswerSelection(selected, correct, qId) {
+        sessionAnswers[currentIndex] = selected; // 記下這題選了什麼
         isAnswered = true;
-        
-        const qId = currentQuizList[currentIndex].id;
+
+        const alreadyScored = scoredQuestions.has(currentIndex);
+
+        if (!alreadyScored) {
+            scoredQuestions.add(currentIndex);
+            
+            if (selected === correct) {
+                sessionCorrect++;
+                if(wrongRecord.includes(qId)) {
+                    wrongRecord = wrongRecord.filter(id => id !== qId);
+                    localStorage.setItem('qc_wrong_ids', JSON.stringify(wrongRecord));
+                }
+            } else {
+                sessionWrong++;
+                if(!wrongRecord.includes(qId)) {
+                    wrongRecord.push(qId);
+                    localStorage.setItem('qc_wrong_ids', JSON.stringify(wrongRecord));
+                }
+            }
+            document.getElementById('session-correct').textContent = sessionCorrect;
+            document.getElementById('session-wrong').textContent = sessionWrong;
+        }
+    }
+
+    // 處理畫面顏色與顯示對錯 (純視覺呈現)
+    function renderAnswerState(selected, correct, element) {
         const result = document.getElementById('result-text');
         result.style.display = 'block';
         const isDark = document.body.classList.contains('dark-mode');
@@ -419,21 +475,13 @@
             result.className = "result correct";
             element.style.backgroundColor = isDark ? "rgba(72, 187, 120, 0.3)" : "#e6fffa";
             element.style.borderColor = "#38b2ac";
-            sessionCorrect++;
-            if(wrongRecord.includes(qId)) {
-                wrongRecord = wrongRecord.filter(id => id !== qId);
-                localStorage.setItem('qc_wrong_ids', JSON.stringify(wrongRecord));
-            }
         } else {
             result.textContent = `❌ 錯誤！正確答案是 (${correct})`;
             result.className = "result wrong";
             element.style.backgroundColor = isDark ? "rgba(245, 101, 101, 0.3)" : "#fff5f5"; 
             element.style.borderColor = "#e53e3e";
-            sessionWrong++;
-            if(!wrongRecord.includes(qId)) {
-                wrongRecord.push(qId);
-                localStorage.setItem('qc_wrong_ids', JSON.stringify(wrongRecord));
-            }
+            
+            // 將正確答案框起來
             const labels = ['A', 'B', 'C', 'D'];
             const correctIndex = labels.indexOf(correct);
             const optElements = document.querySelectorAll('.option');
@@ -442,8 +490,6 @@
                  optElements[correctIndex].style.backgroundColor = isDark ? "rgba(72, 187, 120, 0.15)" : "#f0fff4";
             }
         }
-        document.getElementById('session-correct').textContent = sessionCorrect;
-        document.getElementById('session-wrong').textContent = sessionWrong;
     }
 
     function toggleStar() {
@@ -483,6 +529,13 @@
         }, 1000);
     }
 
+    document.getElementById('btn-prev').onclick = () => {
+        if (currentIndex > 0) {
+            currentIndex--;
+            loadQuestion();
+        }
+    };
+
     document.getElementById('btn-next').onclick = () => {
         currentIndex++;
         loadQuestion();
@@ -492,12 +545,19 @@
         if (document.getElementById('quiz-ui').style.display === 'none') return;
         const key = e.key.toUpperCase();
         const map = {'1':'A', '2':'B', '3':'C', '4':'D', 'A':'A', 'B':'B', 'C':'C', 'D':'D'};
+        
         if (map[key] && !isAnswered) {
             const idx = map[key].charCodeAt(0) - 65; 
             const opts = document.querySelectorAll('.option');
-            if(opts[idx]) checkAnswer(map[key], currentQuizList[currentIndex].answer, opts[idx]);
+            const q = currentQuizList[currentIndex];
+            if(opts[idx]) {
+                processAnswerSelection(map[key], q.answer, q.id);
+                renderAnswerState(map[key], q.answer, opts[idx]);
+            }
         } else if (key === 'J' || key === 'ENTER') {
             if(isAnswered) { currentIndex++; loadQuestion(); }
+        } else if (key === 'K') { 
+            if (currentIndex > 0) { currentIndex--; loadQuestion(); }
         } else if (key === 'F') { toggleStar(); }
     });
 </script>
